@@ -1,0 +1,83 @@
+services:
+  # MongoDB local instance replaces MongoDB Atlas
+  mongodb:
+    image: mongo:7.0
+    container_name: netsentinel_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_DB_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_DB_PASSWORD:-netsentinel_pass}
+      MONGO_INITDB_DATABASE: TEST_DB
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MLflow tracking server (replaces DagsHub)
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.19.0
+    container_name: netsentinel_mlflow
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # NetSentinel-MLOps FastAPI application
+  netsentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: netsentinel_app
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      MONGO_DB_USERNAME: ${MONGO_DB_USERNAME:-admin}
+      MONGO_DB_PASSWORD: ${MONGO_DB_PASSWORD:-netsentinel_pass}
+      MONGO_DB_HOST: mongodb
+      MONGO_DB_PORT: 27017
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      APP_ENV: ${APP_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./final_model:/app/final_model
+      - ./prediction_output:/app/prediction_output
+      - ./logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  mongo_data:
+  mlflow_data:
+
+networks:
+  default:
+    name: netsentinel_network
